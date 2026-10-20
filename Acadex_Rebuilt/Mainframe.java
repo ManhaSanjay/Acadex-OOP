@@ -13,6 +13,7 @@ import javax.swing.event.DocumentListener;
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 
 public class Mainframe extends JFrame {
 
@@ -877,44 +878,144 @@ p.add(Box.createVerticalGlue());
             page.add(schedule);
             page.add(Box.createVerticalStrut(16));
 
-            JPanel overview = card();
-            overview.setLayout(
-                    new BoxLayout(overview, BoxLayout.Y_AXIS));
-            overview.add(label("Attendance overview", 18, true));
-            overview.add(Box.createVerticalStrut(12));
+            
+JPanel overview = card();
+overview.setLayout(
+        new BoxLayout(overview, BoxLayout.Y_AXIS));
 
-            for (Subject s : allSubjects) {
-                String overviewSql =
-                        "SELECT classes_attended,classes_held " +
-                        "FROM attendance " +
-                        "WHERE subject_id=? AND attendance_date IS NULL";
+// Threshold controls
+JPanel overviewHeader = new JPanel(
+        new FlowLayout(FlowLayout.LEFT, 10, 0));
+overviewHeader.setOpaque(false);
 
-                try (Connection c = Database.getConnection();
-                     PreparedStatement p = c.prepareStatement(overviewSql)) {
+overviewHeader.add(label(
+        "Attendance overview", 18, true));
 
-                    p.setInt(1, s.id());
+overviewHeader.add(new JLabel("Required attendance:"));
 
-                    try (ResultSet r = p.executeQuery()) {
-                        if (r.next()) {
-                            int attended = r.getInt(1);
-                            int held = r.getInt(2);
+JSpinner thresholdSpinner = new JSpinner(
+        new SpinnerNumberModel(75, 1, 99, 1));
 
-                            double pct = held == 0
-                                    ? 0
-                                    : 100.0 * attended / held;
+thresholdSpinner.setPreferredSize(new Dimension(65, 28));
+overviewHeader.add(thresholdSpinner);
 
-                            overview.add(label(
-                                    String.format(
-                                            Locale.US,
-                                            "%s  |  %.1f%%  (%d/%d)",
-                                            s.name(), pct, attended, held),
-                                    13, false));
+overview.add(overviewHeader);
+overview.add(Box.createVerticalStrut(12));
 
-                            overview.add(Box.createVerticalStrut(8));
-                        }
+// Separate panel for subject results
+JPanel overviewContent = new JPanel();
+overviewContent.setLayout(
+        new BoxLayout(overviewContent, BoxLayout.Y_AXIS));
+overviewContent.setOpaque(false);
+
+overview.add(overviewContent);
+
+// Refresh results whenever the threshold changes
+Runnable refreshOverview = () -> {
+    overviewContent.removeAll();
+
+    int threshold =
+            ((Number) thresholdSpinner.getValue()).intValue();
+
+    for (Subject s : allSubjects) {
+        String overviewSql =
+                "SELECT classes_attended, classes_held " +
+                "FROM attendance " +
+                "WHERE subject_id=? AND attendance_date IS NULL";
+
+        try (Connection c = Database.getConnection();
+             PreparedStatement p =
+                     c.prepareStatement(overviewSql)) {
+
+            p.setInt(1, s.id());
+
+            try (ResultSet r = p.executeQuery()) {
+                if (r.next()) {
+                    int attended =
+                            r.getInt("classes_attended");
+                    int held =
+                            r.getInt("classes_held");
+
+                    double pct =
+                            AttendanceCalc.percentage(
+                                    attended, held);
+
+                    String status;
+
+                    if (held == 0) {
+                        status = "No classes recorded";
+                    } else if (pct >= threshold) {
+                        status = "On track";
+                    } else {
+                        status = "Below " + threshold + "%";
                     }
+
+                    overviewContent.add(label(
+                            String.format(
+                                    Locale.US,
+                                    "%s | %.1f%% (%d/%d)",
+                                    s.name(), pct, attended, held),
+                            13, false));
+
+                    JLabel statusLabel = new JLabel("Status: " + status);
+statusLabel.setFont(statusLabel.getFont().deriveFont(
+        Font.BOLD, 12f));
+
+statusLabel.setForeground(
+        held > 0 && pct >= threshold
+                ? new Color(46, 139, 87)
+                : Color.RED);
+
+overviewContent.add(statusLabel);
+
+                    if (held > 0 && pct < threshold) {
+                        int needed =
+                                AttendanceCalc.classesNeeded(
+                                        attended, held, threshold);
+
+                        JLabel neededLabel = new JLabel(
+        "Attend the next " + needed
+                + " consecutive classes to reach "
+                + threshold + "%.");
+
+neededLabel.setFont(
+        neededLabel.getFont().deriveFont(12f));
+
+neededLabel.setForeground(new Color(200, 45, 45));
+
+overviewContent.add(neededLabel);
+                    }
+
+                    overviewContent.add(
+                            Box.createVerticalStrut(8));
                 }
             }
+        } catch (SQLException ex) {
+            JOptionPane.showMessageDialog(
+                    this,
+                    "Could not load attendance for "
+                            + s.name() + ": " + ex.getMessage(),
+                    "Attendance Error",
+                    JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    overviewContent.revalidate();
+    overviewContent.repaint();
+};
+
+thresholdSpinner.addChangeListener(
+        e -> refreshOverview.run());
+
+JButton refreshAttendance = new JButton("Refresh Attendance");
+
+refreshAttendance.addActionListener(e -> refreshOverview.run());
+
+overviewHeader.add(refreshAttendance);
+
+// Display initial results using the default 75% threshold
+refreshOverview.run();
+
 
             page.add(overview);
 
@@ -1046,43 +1147,49 @@ p.add(Box.createVerticalGlue());
 
     // ---------------- GRADES ----------------
 
-    private void showGrades() {
-        JPanel page = new JPanel(new BorderLayout(0, 14));
-        page.setBackground(bg);
+    
+private void showGrades() {
+    JPanel page = new JPanel(new BorderLayout(0, 14));
+    page.setBackground(bg);
 
-        JPanel header = new JPanel(new BorderLayout());
-        header.setOpaque(false);
-        header.add(
-                label("Assessment marks and targets", 18, true),
-                BorderLayout.WEST);
+    JPanel header = new JPanel(new BorderLayout());
+    header.setOpaque(false);
+    header.add(
+        label("Assessment marks and targets", 18, true),
+        BorderLayout.WEST
+    );
 
-        JButton refresh = new JButton("Refresh");
-        refresh.addActionListener(e -> showGrades());
-        header.add(refresh, BorderLayout.EAST);
-        page.add(header, BorderLayout.NORTH);
+    JButton refresh = new JButton("Refresh");
+    refresh.addActionListener(e -> showGrades());
+    header.add(refresh, BorderLayout.EAST);
+    page.add(header, BorderLayout.NORTH);
 
-        JPanel list = new JPanel(new GridLayout(0, 2, 14, 14));
-        list.setBackground(bg);
+    JPanel list = new JPanel(new GridLayout(0, 2, 14, 14));
+    list.setBackground(bg);
 
-        try {
-            for (Subject s : subjects()) {
-                list.add(gradeCard(s));
-            }
-        } catch (Exception e) {
-            error(e);
+    try {
+        for (Subject s : subjects()) {
+            list.add(gradeCard(s));
         }
-
-        JScrollPane scroll = new JScrollPane(list);
-        scroll.setBorder(null);
-        scroll.getViewport().setBackground(bg);
-        page.add(scroll, BorderLayout.CENTER);
-
-        JButton add = new JButton("+ Add subject");
-        add.addActionListener(e -> addSubject());
-        page.add(add, BorderLayout.SOUTH);
-
-        render("Grades", page);
+    } catch (Exception e) {
+        error(e);
     }
+
+    JScrollPane scroll = new JScrollPane(list);
+    scroll.setBorder(null);
+    scroll.getViewport().setBackground(bg);
+    page.add(scroll, BorderLayout.CENTER);
+
+    JPanel sidebar = gradeSummaryPanel();
+    sidebar.setPreferredSize(new Dimension(285, 0));
+    page.add(sidebar, BorderLayout.EAST);
+
+    JButton add = new JButton("+ Add subject");
+    add.addActionListener(e -> addSubject());
+    page.add(add, BorderLayout.SOUTH);
+
+    render("Grades", page);
+}
 
     private JPanel gradeCard(Subject subject) throws SQLException {
         JPanel p = card();
@@ -1518,78 +1625,207 @@ p.add(Box.createVerticalGlue());
 
         page.add(subjectCard);
         page.add(Box.createVerticalStrut(16));
+        try {
+    page.add(semesterHistoryCard());
+} catch (Exception e) {
+    error(e);
+}
 
-        JPanel attendance = card();
-        attendance.setLayout(
-                new BoxLayout(attendance, BoxLayout.Y_AXIS));
-        attendance.add(label("Attendance history", 18, true));
-        attendance.add(Box.createVerticalStrut(10));
+page.add(Box.createVerticalStrut(16));
 
-        SpinnerDateModel model = new SpinnerDateModel(
-                new java.util.Date(), null, null, Calendar.DAY_OF_MONTH);
+       
+JPanel attendance = card();
+attendance.setLayout(
+        new BoxLayout(attendance, BoxLayout.Y_AXIS));
 
-        JSpinner dateSpinner = new JSpinner(model);
-        dateSpinner.setEditor(
-                new JSpinner.DateEditor(dateSpinner, "dd/MM/yyyy"));
+attendance.add(label("Attendance history", 18, true));
+attendance.add(Box.createVerticalStrut(10));
 
-        JButton search = new JButton("Show records");
+SpinnerDateModel model = new SpinnerDateModel(
+        new java.util.Date(), null, null, Calendar.DAY_OF_MONTH);
 
-        JPanel dateRow = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        dateRow.setOpaque(false);
-        dateRow.add(new JLabel("Select date:"));
-        dateRow.add(dateSpinner);
-        dateRow.add(search);
-        attendance.add(dateRow);
+JSpinner dateSpinner = new JSpinner(model);
+dateSpinner.setEditor(
+        new JSpinner.DateEditor(dateSpinner, "dd/MM/yyyy"));
 
-        JPanel records = new JPanel();
-        records.setBackground(Color.WHITE);
-        records.setLayout(
-                new BoxLayout(records, BoxLayout.Y_AXIS));
-        attendance.add(records);
+JButton search = new JButton("Show records");
+JButton saveChanges = new JButton("Save Changes");
 
-        Runnable loadRecords = () -> {
-            records.removeAll();
+JPanel dateRow = new JPanel(new FlowLayout(FlowLayout.LEFT));
+dateRow.setOpaque(false);
+dateRow.add(new JLabel("Select date:"));
+dateRow.add(dateSpinner);
+dateRow.add(search);
+dateRow.add(saveChanges);
 
-            String date = new java.text.SimpleDateFormat("yyyy-MM-dd")
-                    .format((java.util.Date) dateSpinner.getValue());
+attendance.add(dateRow);
 
-            try (Connection c = Database.getConnection();
-                 PreparedStatement q = c.prepareStatement(
-                         "SELECT a.hour,s.name,a.present FROM attendance a " +
-                         "JOIN subjects s ON s.id=a.subject_id " +
-                         "WHERE a.attendance_date=? ORDER BY a.hour")) {
+JPanel records = new JPanel();
+records.setBackground(Color.WHITE);
+records.setLayout(
+        new BoxLayout(records, BoxLayout.Y_AXIS));
+attendance.add(records);
 
-                q.setString(1, date);
+// Each checkbox maps to {date, subject ID, hour}
+Map<JCheckBox, String[]> edits = new LinkedHashMap<>();
 
-                try (ResultSet r = q.executeQuery()) {
-                    boolean any = false;
+Runnable loadRecords = () -> {
+    records.removeAll();
+    edits.clear();
 
-                    while (r.next()) {
-                        any = true;
+    String date = new java.text.SimpleDateFormat("yyyy-MM-dd")
+            .format((java.util.Date) dateSpinner.getValue());
 
-                        records.add(label(
-                                "Hour " + r.getInt("hour")
-                                + "  |  " + r.getString("name")
-                                + "  |  "
-                                + (r.getInt("present") == 1
-                                        ? "Present" : "Absent"),
-                                13, false));
-                    }
+    try (Connection c = Database.getConnection();
+         PreparedStatement q = c.prepareStatement(
+                 "SELECT a.subject_id, a.hour, s.name, a.present " +
+                 "FROM attendance a " +
+                 "JOIN subjects s ON s.id = a.subject_id " +
+                 "WHERE a.attendance_date = ? " +
+                 "ORDER BY a.hour")) {
 
-                    if (!any) {
-                        records.add(label(
-                                "No attendance records saved for this date.",
-                                13, false));
+        q.setString(1, date);
+
+        try (ResultSet r = q.executeQuery()) {
+            boolean any = false;
+
+            while (r.next()) {
+                any = true;
+
+                int subjectId = r.getInt("subject_id");
+                int hour = r.getInt("hour");
+                String subjectName = r.getString("name");
+                boolean present = r.getInt("present") == 1;
+
+                JCheckBox checkbox = new JCheckBox(
+                        "Hour " + hour + "  |  " + subjectName);
+
+                checkbox.setSelected(present);
+                checkbox.setOpaque(false);
+                checkbox.setFont(
+                        checkbox.getFont().deriveFont(13f));
+
+                records.add(checkbox);
+
+                edits.put(
+                        checkbox,
+                        new String[] {
+                                date,
+                                String.valueOf(subjectId),
+                                String.valueOf(hour)
+                        });
+            }
+
+            if (!any) {
+                records.add(label(
+                        "No attendance records saved for this date.",
+                        13, false));
+            }
+        }
+
+    } catch (Exception ex) {
+        error(ex);
+    }
+
+    records.revalidate();
+    records.repaint();
+};
+
+search.addActionListener(e -> loadRecords.run());
+
+
+saveChanges.addActionListener(e -> {
+    if (edits.isEmpty()) {
+        JOptionPane.showMessageDialog(
+                this,
+                "There are no attendance records to save.");
+        return;
+    }
+
+    try (Connection c = Database.getConnection()) {
+        c.setAutoCommit(false);
+
+        try {
+            for (Map.Entry<JCheckBox, String[]> entry
+                    : edits.entrySet()) {
+
+                JCheckBox checkbox = entry.getKey();
+                String[] key = entry.getValue();
+
+                String date = key[0];
+                int subjectId = Integer.parseInt(key[1]);
+                int hour = Integer.parseInt(key[2]);
+                int newPresent =
+                        checkbox.isSelected() ? 1 : 0;
+
+                int oldPresent;
+
+                // Read the currently saved value
+                try (PreparedStatement q = c.prepareStatement(
+                        "SELECT present FROM attendance " +
+                        "WHERE attendance_date=? " +
+                        "AND subject_id=? AND hour=?")) {
+
+                    q.setString(1, date);
+                    q.setInt(2, subjectId);
+                    q.setInt(3, hour);
+
+                    try (ResultSet r = q.executeQuery()) {
+                        if (!r.next()) {
+                            throw new SQLException(
+                                    "Attendance record not found for "
+                                            + "hour " + hour + ".");
+                        }
+
+                        oldPresent = r.getInt("present");
                     }
                 }
 
-            } catch (Exception ex) {
-                error(ex);
+                // Update the daily record
+                try (PreparedStatement u = c.prepareStatement(
+                        "UPDATE attendance SET present=? " +
+                        "WHERE attendance_date=? " +
+                        "AND subject_id=? AND hour=?")) {
+
+                    u.setInt(1, newPresent);
+                    u.setString(2, date);
+                    u.setInt(3, subjectId);
+                    u.setInt(4, hour);
+                    u.executeUpdate();
+                }
+
+                // Update aggregate totals only if the value changed
+                if (oldPresent != newPresent) {
+                    adjustAggregate(
+                            c,
+                            subjectId,
+                            0,
+                            newPresent - oldPresent);
+                }
             }
 
-            records.revalidate();
-            records.repaint();
-        };
+            c.commit();
+
+        } catch (Exception ex) {
+            c.rollback();
+            throw ex;
+        }
+
+    } catch (Exception ex) {
+        error(ex);
+        return;
+    }
+
+    JOptionPane.showMessageDialog(
+            this,
+            "Attendance changes saved successfully.");
+
+    loadRecords.run();
+});
+
+loadRecords.run();
+page.add(attendance);
+
 
         search.addActionListener(e -> loadRecords.run());
         loadRecords.run();
@@ -1602,40 +1838,113 @@ p.add(Box.createVerticalGlue());
         render("Settings", scroll);
     }
 
-    private void showSubjectSettings(Subject s) {
-        JPanel page = new JPanel();
-        page.setBackground(bg);
-        page.setLayout(new BoxLayout(page, BoxLayout.Y_AXIS));
+    
+private void showSubjectSettings(Subject s) {
+    JPanel page = new JPanel();
+    page.setBackground(bg);
+    page.setLayout(new BoxLayout(page, BoxLayout.Y_AXIS));
 
-        JButton back = new JButton("← Back to subjects");
-        back.setAlignmentX(Component.LEFT_ALIGNMENT);
-        back.addActionListener(e -> showSettings());
+    JButton back = new JButton("← Back to subjects");
+    back.setAlignmentX(Component.LEFT_ALIGNMENT);
+    back.addActionListener(e -> showSettings());
 
-        page.add(back);
-        page.add(Box.createVerticalStrut(12));
+    page.add(back);
+    page.add(Box.createVerticalStrut(12));
 
-        JPanel subjectCard = card();
-        subjectCard.setLayout(
-                new BoxLayout(subjectCard, BoxLayout.Y_AXIS));
+    JPanel subjectCard = card();
+    subjectCard.setLayout(
+            new BoxLayout(subjectCard, BoxLayout.Y_AXIS));
 
-        subjectCard.add(label(s.name(), 20, true));
-        subjectCard.add(label("Credits: " + s.credits(), 13, false));
-        subjectCard.add(Box.createVerticalStrut(12));
+    subjectCard.add(label(s.name(), 20, true));
+    subjectCard.add(label("Credits: " + s.credits(), 13, false));
+    subjectCard.add(Box.createVerticalStrut(12));
 
-        try {
-            subjectCard.add(subjectSettingsRow(s));
-        } catch (SQLException ex) {
-            error(ex);
+    // Semester selection
+    JPanel semesterRow = new JPanel(
+            new FlowLayout(FlowLayout.LEFT));
+    semesterRow.setOpaque(false);
+    semesterRow.add(new JLabel("Semester:"));
+
+    String[] semesterOptions = {
+            "Semester 1", "Semester 2",
+            "Semester 3", "Semester 4",
+            "Semester 5", "Semester 6",
+            "Semester 7", "Semester 8"
+    };
+
+    JComboBox<String> semesterChoice =
+            new JComboBox<>(semesterOptions);
+
+    // Load this subject's currently saved semester.
+    try (Connection c = Database.getConnection();
+         PreparedStatement q = c.prepareStatement(
+                 "SELECT semester_id FROM subjects WHERE id = ?")) {
+
+        q.setInt(1, s.id());
+
+        try (ResultSet r = q.executeQuery()) {
+            if (r.next()) {
+                int semesterId = r.getInt("semester_id");
+
+                if (!r.wasNull()
+                        && semesterId >= 1
+                        && semesterId <= 8) {
+                    semesterChoice.setSelectedIndex(semesterId - 1);
+                }
+            }
         }
 
-        page.add(subjectCard);
-
-        JScrollPane scroll = new JScrollPane(page);
-        scroll.setBorder(null);
-        scroll.getVerticalScrollBar().setUnitIncrement(16);
-
-        render("Settings", scroll);
+    } catch (SQLException ex) {
+        error(ex);
     }
+
+    JButton saveSemester = new JButton("Save semester");
+
+    saveSemester.addActionListener(e -> {
+        int semesterId = semesterChoice.getSelectedIndex() + 1;
+
+        try (Connection c = Database.getConnection();
+             PreparedStatement u = c.prepareStatement(
+                     "UPDATE subjects SET semester_id = ? WHERE id = ?")) {
+
+            u.setInt(1, semesterId);
+            u.setInt(2, s.id());
+
+            if (u.executeUpdate() == 0) {
+                throw new SQLException("Subject not found.");
+            }
+
+            JOptionPane.showMessageDialog(
+                    this,
+                    "Semester updated successfully! ♡");
+
+            showSubjectSettings(s);
+
+        } catch (Exception ex) {
+            error(ex);
+        }
+    });
+
+    semesterRow.add(semesterChoice);
+    semesterRow.add(saveSemester);
+
+    subjectCard.add(semesterRow);
+    subjectCard.add(Box.createVerticalStrut(12));
+
+    try {
+        subjectCard.add(subjectSettingsRow(s));
+    } catch (SQLException ex) {
+        error(ex);
+    }
+
+    page.add(subjectCard);
+
+    JScrollPane scroll = new JScrollPane(page);
+    scroll.setBorder(null);
+    scroll.getVerticalScrollBar().setUnitIncrement(16);
+
+    render("Settings", scroll);
+}
 
     private JPanel subjectSettingsRow(Subject s) throws SQLException {
         JPanel row = new JPanel();
@@ -1867,44 +2176,66 @@ p.add(Box.createVerticalGlue());
         return row;
     }
 
-    private void addSubject() {
-        JTextField code = new JTextField();
-        JTextField name = new JTextField();
-        JTextField credits = new JTextField("3");
 
-        Object[] form = {
-                "Subject code", code,
-                "Subject name", name,
-                "Credits", credits
-        };
+private void addSubject() {
+    JTextField code = new JTextField();
+    JTextField name = new JTextField();
+    JTextField credits = new JTextField("3");
 
-        if (JOptionPane.showConfirmDialog(
-                this, form, "Add subject",
-                JOptionPane.OK_CANCEL_OPTION)
-                != JOptionPane.OK_OPTION) {
-            return;
-        }
+    String[] semesterOptions = {
+            "Semester 1", "Semester 2",
+            "Semester 3", "Semester 4",
+            "Semester 5", "Semester 6",
+            "Semester 7", "Semester 8"
+    };
 
-        try {
-            int cr = Integer.parseInt(credits.getText().trim());
+    JComboBox<String> semester = new JComboBox<>(semesterOptions);
 
-            if (code.getText().isBlank()
-                    || name.getText().isBlank() || cr <= 0) {
-                throw new IllegalArgumentException(
-                        "Fill all fields correctly.");
-            }
+    Object[] form = {
+            "Subject code", code,
+            "Subject name", name,
+            "Credits", credits,
+            "Semester", semester
+    };
 
-            new SubjectDAO().add(
-                    code.getText().trim(),
-                    name.getText().trim(), cr);
-
-            ensureDefaultAssessmentsForExistingSubjects();
-            showSettings();
-
-        } catch (Exception e) {
-            error(e);
-        }
+    if (JOptionPane.showConfirmDialog(
+            this, form, "Add subject",
+            JOptionPane.OK_CANCEL_OPTION)
+            != JOptionPane.OK_OPTION) {
+        return;
     }
+
+    try {
+        int cr = Integer.parseInt(credits.getText().trim());
+
+        if (code.getText().isBlank()
+                || name.getText().isBlank() || cr <= 0) {
+            throw new IllegalArgumentException(
+                    "Fill all fields correctly.");
+        }
+
+        int semesterNumber = semester.getSelectedIndex() + 1;
+
+        new SubjectDAO().add(
+                code.getText().trim(),
+                name.getText().trim(), cr);
+
+        // Assign the newly added subject to the chosen semester.
+        try (Connection c = Database.getConnection();
+             PreparedStatement p = c.prepareStatement(
+                     "UPDATE subjects SET semester_id = ? WHERE code = ?")) {
+            p.setInt(1, semesterNumber);
+            p.setString(2, code.getText().trim());
+            p.executeUpdate();
+        }
+
+        ensureDefaultAssessmentsForExistingSubjects();
+        showSettings();
+
+    } catch (Exception e) {
+        error(e);
+    }
+}
 
     private void addAssessment(Subject s) {
         JTextField title = new JTextField();
@@ -3628,6 +3959,446 @@ private void showAdminAcademicSupport() {
     });
 
     render("Academic Support", panel);
+}
+
+
+private JPanel semesterHistoryCard() throws SQLException {
+    JPanel panel = card();
+    panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+
+    panel.add(label("Semester history", 18, true));
+    panel.add(Box.createVerticalStrut(6));
+    panel.add(label(
+        "Enter previous SGPAs and total credits for semesters " +
+        "before you started using Acadex.",
+        12, false));
+    panel.add(Box.createVerticalStrut(12));
+
+    JTextField[] sgpaFields = new JTextField[8];
+    JSpinner[] creditSpinners = new JSpinner[8];
+
+    for (int semester = 1; semester <= 8; semester++) {
+        final int semesterId = semester;
+        boolean locked = semesterHasSubjects(semesterId);
+
+        JPanel row = new JPanel(new BorderLayout(10, 0));
+        row.setOpaque(false);
+
+        JLabel name = label("Semester " + semester, 13, true);
+
+        JTextField sgpaField = new JTextField(6);
+        JSpinner credits = new JSpinner(
+            new SpinnerNumberModel(0, 0, 100, 1)
+        );
+
+        if (locked) {
+            sgpaField.setText(
+                format(calculateSemesterSgpa(semesterId))
+            );
+            sgpaField.setEditable(false);
+            sgpaField.setEnabled(false);
+            sgpaField.setBackground(new Color(230, 233, 239));
+
+            credits.setValue(calculateSemesterCredits(semesterId));
+            credits.setEnabled(false);
+
+            sgpaField.setToolTipText(
+                "Calculated from this semester's subjects and grades."
+            );
+            credits.setToolTipText(
+                "Total credits of subjects assigned to this semester."
+            );
+        } else {
+            sgpaField.setText(getSavedSemesterSgpa(semesterId));
+            credits.setValue(getSavedSemesterCredits(semesterId));
+        }
+
+        sgpaFields[semester - 1] = sgpaField;
+        creditSpinners[semester - 1] = credits;
+
+        JPanel values = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        values.setOpaque(false);
+
+        JPanel sgpaBox = new JPanel(new BorderLayout(0, 3));
+        sgpaBox.setOpaque(false);
+        sgpaBox.add(label("SGPA", 11, false), BorderLayout.NORTH);
+        sgpaBox.add(sgpaField, BorderLayout.CENTER);
+
+        JPanel creditsBox = new JPanel(new BorderLayout(0, 3));
+        creditsBox.setOpaque(false);
+        creditsBox.add(label("Credits", 11, false), BorderLayout.NORTH);
+        creditsBox.add(credits, BorderLayout.CENTER);
+
+        values.add(sgpaBox);
+        values.add(creditsBox);
+
+        row.add(name, BorderLayout.WEST);
+        row.add(values, BorderLayout.EAST);
+
+        panel.add(row);
+        panel.add(Box.createVerticalStrut(10));
+    }
+
+    JButton save = new JButton("Save semester history");
+    save.setBackground(blue);
+    save.setForeground(Color.WHITE);
+
+    save.addActionListener(e -> {
+        try (Connection c = Database.getConnection()) {
+            c.setAutoCommit(false);
+
+            try {
+                for (int i = 0; i < 8; i++) {
+                    int semesterId = i + 1;
+
+                    // Never overwrite historical data while this
+                    // semester contains subjects.
+                    if (semesterHasSubjects(semesterId)) {
+                        continue;
+                    }
+
+                    String value =
+                        sgpaFields[i].getText().trim();
+
+                    int credits = (Integer)
+                        creditSpinners[i].getValue();
+
+                    if (value.isEmpty()) {
+                        // An empty SGPA means no historical result.
+                        try (PreparedStatement p = c.prepareStatement(
+                                "DELETE FROM semester_history " +
+                                "WHERE semester_id = ?")) {
+                            p.setInt(1, semesterId);
+                            p.executeUpdate();
+                        }
+                        continue;
+                    }
+
+                    double sgpa = Double.parseDouble(value);
+
+                    if (!Double.isFinite(sgpa) ||
+                            sgpa < 0 || sgpa > 10) {
+                        throw new IllegalArgumentException(
+                            "Semester " + semesterId +
+                            " SGPA must be between 0 and 10."
+                        );
+                    }
+
+                    if (credits <= 0) {
+                        throw new IllegalArgumentException(
+                            "Enter the total credits for Semester " +
+                            semesterId + "."
+                        );
+                    }
+
+                    try (PreparedStatement p = c.prepareStatement("""
+                        INSERT OR REPLACE INTO semester_history
+                            (semester_id, sgpa, credits)
+                        VALUES (?, ?, ?)
+                        """)) {
+                        p.setInt(1, semesterId);
+                        p.setDouble(2, sgpa);
+                        p.setInt(3, credits);
+                        p.executeUpdate();
+                    }
+                }
+
+                c.commit();
+
+            } catch (Exception ex) {
+                c.rollback();
+                throw ex;
+            } finally {
+                c.setAutoCommit(true);
+            }
+
+            JOptionPane.showMessageDialog(
+                this, "Semester history saved! ♡"
+            );
+
+            showSettings();
+
+        } catch (Exception ex) {
+            error(ex);
+        }
+    });
+
+    panel.add(save);
+    return panel;
+}
+
+private boolean semesterHasSubjects(int semesterId)
+        throws SQLException {
+    try (Connection c = Database.getConnection();
+         PreparedStatement p = c.prepareStatement(
+             "SELECT COUNT(*) FROM subjects WHERE semester_id = ?")) {
+
+        p.setInt(1, semesterId);
+
+        try (ResultSet r = p.executeQuery()) {
+            return r.next() && r.getInt(1) > 0;
+        }
+    }
+}
+
+private String getSavedSemesterSgpa(int semesterId)
+        throws SQLException {
+    try (Connection c = Database.getConnection();
+         PreparedStatement p = c.prepareStatement(
+             "SELECT sgpa FROM semester_history WHERE semester_id = ?")) {
+
+        p.setInt(1, semesterId);
+
+        try (ResultSet r = p.executeQuery()) {
+            return r.next() ? format(r.getDouble("sgpa")) : "";
+        }
+    }
+}
+
+private double calculateSemesterSgpa(int semesterId)
+        throws SQLException {
+    double weightedPoints = 0;
+    int totalCredits = 0;
+
+    try (Connection c = Database.getConnection();
+         PreparedStatement p = c.prepareStatement("""
+             SELECT s.credits,
+                    COALESCE(g.cie, 0) + COALESCE(g.ese, 0) AS total
+             FROM subjects s
+             LEFT JOIN grades g ON g.subject_id = s.id
+             WHERE s.semester_id = ?
+             """)) {
+
+        p.setInt(1, semesterId);
+
+        try (ResultSet r = p.executeQuery()) {
+            while (r.next()) {
+                int credits = r.getInt("credits");
+                double total = r.getDouble("total");
+
+                weightedPoints +=
+                    GRADE_POINTS[gradeIndex(total)] * credits;
+
+                totalCredits += credits;
+            }
+        }
+    }
+
+    return totalCredits == 0
+        ? 0
+        : weightedPoints / totalCredits;
+}
+
+private int getSavedSemesterCredits(int semesterId)
+        throws SQLException {
+    try (Connection c = Database.getConnection();
+         PreparedStatement p = c.prepareStatement(
+             "SELECT credits FROM semester_history " +
+             "WHERE semester_id = ?")) {
+
+        p.setInt(1, semesterId);
+
+        try (ResultSet r = p.executeQuery()) {
+            return r.next() ? r.getInt("credits") : 0;
+        }
+    }
+}
+
+private int calculateSemesterCredits(int semesterId)
+        throws SQLException {
+    try (Connection c = Database.getConnection();
+         PreparedStatement p = c.prepareStatement(
+             "SELECT COALESCE(SUM(credits), 0) " +
+             "FROM subjects WHERE semester_id = ?")) {
+
+        p.setInt(1, semesterId);
+
+        try (ResultSet r = p.executeQuery()) {
+            return r.next() ? r.getInt(1) : 0;
+        }
+    }
+}
+
+private JPanel gradeSummaryPanel() {
+    JPanel panel = card();
+    panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+
+    panel.add(label("Academic summary", 18, true));
+    panel.add(Box.createVerticalStrut(12));
+
+    JComboBox<String> semesterChoice = new JComboBox<>(
+        new String[] {
+            "Semester 1", "Semester 2",
+            "Semester 3", "Semester 4",
+            "Semester 5", "Semester 6",
+            "Semester 7", "Semester 8"
+        }
+    );
+
+    panel.add(label("View semester", 12, false));
+    panel.add(semesterChoice);
+    panel.add(Box.createVerticalStrut(14));
+
+    JLabel sgpaValue = label("—", 24, true);
+    JLabel cgpaValue = label("—", 24, true);
+    JLabel creditsValue = label("Credits: —", 12, false);
+
+    panel.add(label("Semester SGPA", 12, false));
+    panel.add(sgpaValue);
+    panel.add(creditsValue);
+    panel.add(Box.createVerticalStrut(12));
+
+    panel.add(label("Overall CGPA", 12, false));
+    panel.add(cgpaValue);
+    panel.add(Box.createVerticalStrut(16));
+
+    panel.add(label("Subject grades", 14, true));
+    panel.add(Box.createVerticalStrut(8));
+
+    JPanel subjectList = new JPanel();
+    subjectList.setOpaque(false);
+    subjectList.setLayout(
+        new BoxLayout(subjectList, BoxLayout.Y_AXIS)
+    );
+
+    JScrollPane subjectScroll = new JScrollPane(subjectList);
+    subjectScroll.setBorder(null);
+    subjectScroll.setPreferredSize(new Dimension(250, 230));
+    subjectScroll.getViewport().setOpaque(false);
+    panel.add(subjectScroll);
+
+    Runnable update = () -> {
+        int semesterId = semesterChoice.getSelectedIndex() + 1;
+
+        try {
+            boolean hasSubjects = semesterHasSubjects(semesterId);
+            double sgpa;
+            int credits;
+
+            if (hasSubjects) {
+                sgpa = calculateSemesterSgpa(semesterId);
+                credits = calculateSemesterCredits(semesterId);
+            } else {
+                String saved = getSavedSemesterSgpa(semesterId);
+                credits = getSavedSemesterCredits(semesterId);
+
+                if (saved.isEmpty()) {
+                    sgpaValue.setText("—");
+                    creditsValue.setText("No semester data");
+                    subjectList.removeAll();
+                    subjectList.revalidate();
+                    subjectList.repaint();
+                    cgpaValue.setText(format(calculateOverallCgpa()));
+                    return;
+                }
+
+                sgpa = Double.parseDouble(saved);
+            }
+
+            sgpaValue.setText(format(sgpa));
+            creditsValue.setText("Credits: " + credits);
+            cgpaValue.setText(format(calculateOverallCgpa()));
+
+            subjectList.removeAll();
+
+            if (!hasSubjects) {
+                subjectList.add(label(
+                    "Historical result from Settings",
+                    12, false
+                ));
+            } else {
+                try (Connection c = Database.getConnection();
+                     PreparedStatement q = c.prepareStatement("""
+                         SELECT s.name, s.credits,
+                                COALESCE(g.cie, 0) +
+                                COALESCE(g.ese, 0) AS total
+                         FROM subjects s
+                         LEFT JOIN grades g ON g.subject_id = s.id
+                         WHERE s.semester_id = ?
+                         ORDER BY s.name
+                         """)) {
+
+                    q.setInt(1, semesterId);
+
+                    try (ResultSet r = q.executeQuery()) {
+                        while (r.next()) {
+                            String name = r.getString("name");
+                            int subjectCredits = r.getInt("credits");
+                            double total = r.getDouble("total");
+                            int index = gradeIndex(total);
+
+                            JPanel subjectRow = new JPanel(
+                                new BorderLayout(6, 0)
+                            );
+                            subjectRow.setOpaque(false);
+
+                            subjectRow.add(
+                                label(name, 12, true),
+                                BorderLayout.CENTER
+                            );
+
+                            subjectRow.add(
+                                label(
+                                    GRADES[index] + " · " +
+                                    subjectCredits + " cr",
+                                    12, false
+                                ),
+                                BorderLayout.EAST
+                            );
+
+                            subjectList.add(subjectRow);
+                            subjectList.add(
+                                Box.createVerticalStrut(7)
+                            );
+                        }
+                    }
+                }
+            }
+
+            subjectList.revalidate();
+            subjectList.repaint();
+
+        } catch (Exception ex) {
+            error(ex);
+        }
+    };
+
+    semesterChoice.addActionListener(e -> update.run());
+    update.run();
+
+    return panel;
+}
+
+private double calculateOverallCgpa() throws SQLException {
+    double weightedPoints = 0;
+    int totalCredits = 0;
+
+    for (int semesterId = 1; semesterId <= 8; semesterId++) {
+        if (semesterHasSubjects(semesterId)) {
+            int credits = calculateSemesterCredits(semesterId);
+            double sgpa = calculateSemesterSgpa(semesterId);
+
+            weightedPoints += sgpa * credits;
+            totalCredits += credits;
+
+        } else {
+            String saved = getSavedSemesterSgpa(semesterId);
+
+            if (!saved.isEmpty()) {
+                int credits = getSavedSemesterCredits(semesterId);
+
+                if (credits > 0) {
+                    double sgpa = Double.parseDouble(saved);
+                    weightedPoints += sgpa * credits;
+                    totalCredits += credits;
+                }
+            }
+        }
+    }
+
+    return totalCredits == 0
+        ? 0
+        : weightedPoints / totalCredits;
 }
 
 }
