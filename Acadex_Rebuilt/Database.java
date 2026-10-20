@@ -67,15 +67,23 @@ public static Connection getServerConnection() throws SQLException {
                     role TEXT NOT NULL DEFAULT 'STUDENT'
                 )
             """);
-
+s.execute("""
+    CREATE TABLE IF NOT EXISTS semesters (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE
+    )
+""");
             s.execute("""
-                CREATE TABLE IF NOT EXISTS subjects (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    code TEXT NOT NULL UNIQUE,
-                    name TEXT NOT NULL,
-                    credits INTEGER NOT NULL DEFAULT 3
-                )
-            """);
+    CREATE TABLE IF NOT EXISTS subjects (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        credits INTEGER NOT NULL DEFAULT 3,
+        semester_id INTEGER,
+        FOREIGN KEY (semester_id)
+            REFERENCES semesters(id)
+    )
+""");
 
             s.execute("""
                 CREATE TABLE IF NOT EXISTS grades (
@@ -133,6 +141,16 @@ public static Connection getServerConnection() throws SQLException {
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
             """);
+            s.execute("""
+    CREATE TABLE IF NOT EXISTS semester_history (
+        semester_id INTEGER PRIMARY KEY
+            CHECK (semester_id BETWEEN 1 AND 8),
+        sgpa REAL NOT NULL
+            CHECK (sgpa >= 0 AND sgpa <= 10),
+        credits INTEGER NOT NULL DEFAULT 0
+            CHECK (credits >= 0 AND credits <= 100)
+    )
+""");
         }
 
         migrateColumns();
@@ -147,6 +165,10 @@ if (activeUserId == 0) {
         ensureColumn("subjects", "code", "TEXT");
         ensureColumn("subjects", "name", "TEXT");
         ensureColumn("subjects", "credits", "INTEGER DEFAULT 3");
+        ensureColumn(
+        "subjects",
+        "semester_id",
+        "INTEGER REFERENCES semesters(id)");
         ensureColumn("subjects", "cie_max",
                      "REAL NOT NULL DEFAULT 40");
         ensureColumn("subjects", "ese_max",
@@ -155,6 +177,11 @@ if (activeUserId == 0) {
         ensureColumn("grades", "cie", "REAL DEFAULT 0");
         ensureColumn("grades", "ese", "REAL DEFAULT 0");
         ensureColumn("grades", "target_grade", "TEXT DEFAULT 'S'");
+        ensureColumn(
+    "semester_history",
+    "credits",
+    "INTEGER NOT NULL DEFAULT 0"
+);
 
         ensureColumn("assessments", "title", "TEXT");
         ensureColumn("assessments", "max_marks",
@@ -169,9 +196,49 @@ if (activeUserId == 0) {
         ensureColumn("attendance", "attendance_date", "TEXT");
         ensureColumn("attendance", "hour", "INTEGER");
         ensureColumn("attendance", "present", "INTEGER");
+try (Connection c = getConnection();
+     Statement s = c.createStatement()) {
 
+    // Create the default semester if it doesn't exist.
+    s.executeUpdate("""
+        INSERT OR IGNORE INTO semesters (id, name)
+        VALUES (1, 'Semester 1')
+    """);
+    
+for (int i = 2; i <= 8; i++) {
+    try (PreparedStatement p = c.prepareStatement(
+            "INSERT OR IGNORE INTO semesters (id, name) VALUES (?, ?)")) {
+        p.setInt(1, i);
+        p.setString(2, "Semester " + i);
+        p.executeUpdate();
+    }
+}
+
+
+    // Assign existing subjects to Semester 1.
+    // Existing marks and attendance remain untouched.
+    s.executeUpdate("""
+        UPDATE subjects
+        SET semester_id = 1
+        WHERE semester_id IS NULL
+    """);
+
+    // Automatically assign new subjects to Semester 1
+    // when older code inserts them without a semester ID.
+    s.execute("""
+        CREATE TRIGGER IF NOT EXISTS subjects_default_semester
+        AFTER INSERT ON subjects
+        WHEN NEW.semester_id IS NULL
+        BEGIN
+            UPDATE subjects
+            SET semester_id = 1
+            WHERE id = NEW.id;
+        END
+    """);
+}
         try (Connection c = getConnection();
              Statement s = c.createStatement()) {
+
 
             s.executeUpdate("""
                 UPDATE subjects
@@ -379,4 +446,3 @@ private static void addAssessmentIfMissing(
         p.executeUpdate();
     }
 }
-
