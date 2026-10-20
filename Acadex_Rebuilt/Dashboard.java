@@ -1,0 +1,10 @@
+import javax.swing.*;
+import java.awt.*;
+import java.sql.*;
+
+public class Dashboard extends JPanel {
+    private final User user; private final JLabel summary=new JLabel();
+    public Dashboard(User user){this.user=user;setLayout(new BorderLayout(12,12));setBorder(BorderFactory.createEmptyBorder(22,22,22,22));JLabel welcome=new JLabel("Welcome, "+user.getDisplayName()+"!");welcome.setFont(new Font("SansSerif",Font.BOLD,26));JPanel top=new JPanel(new BorderLayout());top.add(welcome,BorderLayout.NORTH);top.add(new JLabel("Your academic overview, all in one place."),BorderLayout.CENTER);add(top,BorderLayout.NORTH);summary.setFont(new Font("SansSerif",Font.PLAIN,17));add(summary,BorderLayout.CENTER);JButton refresh=new JButton("Refresh overview");refresh.addActionListener(e->load());add(refresh,BorderLayout.SOUTH);load();}
+    private void load(){try(Connection c=Database.getConnection();Statement s=c.createStatement()){int subjects=count(s,"subjects"),assessments=count(s,"assessments"),users=count(s,"users");double avg=0;try(ResultSet r=s.executeQuery("SELECT AVG(CASE WHEN classes_held>0 THEN 100.0*classes_attended/classes_held END) FROM attendance")){if(r.next())avg=r.getDouble(1);}double gradeAvg=0;try(ResultSet r=s.executeQuery("SELECT AVG(cie+ese) FROM grades")){if(r.next())gradeAvg=r.getDouble(1);}summary.setText("<html><div style='line-height:1.8'>"+(user.isAdmin()?"Administrator overview":"Student overview")+"<br><br>Subjects: <b>"+subjects+"</b><br>Assessments: <b>"+assessments+"</b><br>Average recorded marks: <b>"+String.format("%.1f",gradeAvg)+" / 100</b><br>Average attendance: <b>"+String.format("%.1f%%",avg)+"</b>"+(user.isAdmin()?"<br>Registered users: <b>"+users+"</b>":"")+"<br><br><span style='color:#666'>Use the tabs above to view or update records.</span></div></html>");}catch(Exception e){summary.setText("Could not load overview: "+e.getMessage());}}
+    private int count(Statement s,String table)throws SQLException{try(ResultSet r=s.executeQuery("SELECT COUNT(*) FROM "+table)){r.next();return r.getInt(1);}}
+}
